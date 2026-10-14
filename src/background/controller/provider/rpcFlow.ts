@@ -232,6 +232,7 @@ const flowContext = flow
   })
   .use(async (ctx) => {
     const { approvalRes, mapMethod, request } = ctx;
+    let oneKeyRequestCancelled = false;
     // process request
     const [approvalType] =
       Reflect.getMetadata('APPROVAL', providerController, mapMethod) || [];
@@ -253,7 +254,15 @@ const flowContext = flow
           return resolve(undefined);
         }
 
-        return waitSignComponentPromise.then(() =>
+        waitSignComponentPromise = waitSignComponentPromise.then(() => {
+          if (oneKeyRequestCancelled) {
+            throw ethErrors.provider.userRejectedRequest(
+              'OneKey signing cancelled'
+            );
+          }
+        });
+
+        const signingTask = waitSignComponentPromise.then(() =>
           Promise.resolve(
             providerController[mapMethod]({
               ...request,
@@ -292,6 +301,7 @@ const flowContext = flow
               }
             })
         );
+        return signingTask.catch(reject);
       });
 
     if (!approvalRes?.isGnosis) {
@@ -329,6 +339,7 @@ const flowContext = flow
         ...rest,
       }).catch(async (error) => {
         if (oneKeyKeyring) {
+          oneKeyRequestCancelled = true;
           try {
             await oneKeyKeyring.cancel();
           } catch (cancelError) {
