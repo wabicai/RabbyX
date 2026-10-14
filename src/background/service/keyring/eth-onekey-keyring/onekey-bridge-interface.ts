@@ -6,6 +6,7 @@ export interface OneKeyBridgeInterface {
   evmSignMessage: CoreApi['evmSignMessage'];
   evmSignTypedData: CoreApi['evmSignTypedData'];
   searchDevices: CoreApi['searchDevices'];
+  getDeviceState: CoreApi['getDeviceState'];
   getPassphraseState: CoreApi['getPassphraseState'];
   evmGetPublicKey: CoreApi['evmGetPublicKey'];
 }

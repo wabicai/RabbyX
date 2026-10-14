@@ -49,6 +49,15 @@ export function initOneKey() {
             });
           break;
 
+        case OneKeyAction.getDeviceState:
+          bridge
+            .getDeviceState(...(msg.params as [string]))
+            .then(sendResponse)
+            .catch((err) => {
+              sendResponse({ error: err });
+            });
+          break;
+
         case OneKeyAction.getPassphraseState:
           bridge
             .getPassphraseState(...(msg.params as [string]))

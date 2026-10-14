@@ -120,6 +120,23 @@ export default class OneKeyOffscreenBridge implements OneKeyBridgeInterface {
     });
   };
 
+  getDeviceState: OneKeyBridgeInterface['getDeviceState'] = (
+    ...params
+  ): any => {
+    return browser.runtime
+      .sendMessage({
+        target: OffscreenCommunicationTarget.onekeyOffscreen,
+        action: OneKeyAction.getDeviceState,
+        params,
+      })
+      .then((res) => {
+        if (res?.error) {
+          throw res.error;
+        }
+        return res;
+      });
+  };
+
   getPassphraseState: OneKeyBridgeInterface['getPassphraseState'] = (
     ...params
   ): any => {

@@ -25,6 +25,7 @@ export enum OneKeyAction {
   evmSignMessage = 'onekey-evm-sign-message',
   evmSignTypedData = 'onekey-evm-sign-typed-data',
   searchDevices = 'onekey-search-devices',
+  getDeviceState = 'onekey-get-device-state',
   getPassphraseState = 'onekey-get-passphrase-state',
   evmGetPublicKey = 'onekey-evm-get-public-key',
 }

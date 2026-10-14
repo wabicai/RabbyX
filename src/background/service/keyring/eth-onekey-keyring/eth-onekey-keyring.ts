@@ -27,7 +27,7 @@ const DELAY_BETWEEN_POPUPS = 1000;
 const ONEKEY_SESSION_STATE_KEY = 'onekeySessionState';
 
 interface OneKeySessionState {
-  passphraseState: string;
+  passphraseState: string | undefined;
   deviceId: string;
   connectId: string;
   publicKey: string;
@@ -83,11 +83,10 @@ class OneKeyKeyring extends EventEmitter {
     this.bridge = opts.bridge;
     this.accountDetails = {};
     this.deserialize(opts);
-    this.init();
   }
 
   async init() {
-    this.bridge.init();
+    await this.bridge.init();
     if (isManifestV3) {
       // resume passphrase state from session after sw inactive
       const value = await browser.storage.session.get(ONEKEY_SESSION_STATE_KEY);
@@ -137,8 +136,8 @@ class OneKeyKeyring extends EventEmitter {
     //   return Promise.resolve('already unlocked');
     // }
     return new Promise((resolve, reject) => {
-      this.bridge
-        .searchDevices()
+      this.init()
+        .then(() => this.bridge.searchDevices())
         .then(async (result) => {
           if (!result.success) {
             reject('searchDevices failed');
@@ -146,9 +145,20 @@ class OneKeyKeyring extends EventEmitter {
           } else {
             if (result.payload.length <= 0) {
               reject('No OneKey Device found');
+              return;
             }
             const device = result.payload[0];
-            const { deviceId, connectId } = device;
+            const { connectId } = device;
+            if (!connectId) {
+              reject('no connectId');
+              return;
+            }
+            const state = await this.bridge.getDeviceState(connectId);
+            if (!state.success) {
+              reject(state.payload.error || 'getDeviceState failed');
+              return;
+            }
+            const deviceId = state.payload.identity.deviceId;
             if (!deviceId || !connectId) {
               reject('no deviceId or connectId');
               return;
@@ -173,7 +183,7 @@ class OneKeyKeyring extends EventEmitter {
               return;
             }
             this.passphraseState = passphraseState.payload;
-            this.bridge
+            return this.bridge
               .evmGetPublicKey(connectId, deviceId, {
                 showOnOneKey: false,
                 chainId: 1,
@@ -182,10 +192,7 @@ class OneKeyKeyring extends EventEmitter {
               })
               .then(async (res) => {
                 if (res.success) {
-                  this.hdk.publicKey = Buffer.from(
-                    res.payload.publicKey,
-                    'hex'
-                  );
+                  this.hdk.publicKey = Buffer.from(res.payload.pub, 'hex');
                   this.hdk.chainCode = Buffer.from(
                     res.payload.node.chain_code,
                     'hex'
@@ -193,7 +200,7 @@ class OneKeyKeyring extends EventEmitter {
                   if (isManifestV3) {
                     const sessionState: OneKeySessionState = {
                       passphraseState: passphraseState.payload,
-                      publicKey: res.payload.publicKey,
+                      publicKey: res.payload.pub,
                       chainCode: res.payload.node.chain_code,
                       deviceId,
                       connectId,
