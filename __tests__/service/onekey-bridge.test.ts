@@ -88,7 +88,7 @@ describe('OneKey SDK bridge', () => {
       expect.objectContaining({
         env: 'desktop-webusb',
         fetchConfig: true,
-        connectSrc: 'https://jssdk.onekey.so/1.2.8/',
+        connectSrc: 'https://jssdk.onekey.so/1.2.10/',
       })
     );
     expect(mockSdk.on).toHaveBeenCalledTimes(1);
