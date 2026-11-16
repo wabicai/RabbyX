@@ -673,13 +673,17 @@ describe('OneKey V1/V2 account import', () => {
       }))
     )
   )(
-    'refreshes the just-opened V2 $deviceType session before probing (unlockedAttachPin=$unlockedAttachPin)',
+    'refreshes the just-opened V2 $deviceType session despite pre-session attach-PIN (unlockedAttachPin=$unlockedAttachPin)',
     async ({ deviceType, unlockedAttachPin }) => {
-      const passphraseState = 'hidden-wallet-token';
+      const passphraseState = 'standard-wallet-id';
       const { bridge, keyring } = setup(
         'V2',
         passphraseState,
-        { passphraseProtection: true, unlocked: false },
+        {
+          passphraseProtection: true,
+          unlocked: true,
+          unlockedAttachPin: true,
+        },
         { deviceType }
       );
       bridge.openWalletSession.mockImplementationOnce(async () => {
@@ -707,11 +711,17 @@ describe('OneKey V1/V2 account import', () => {
           useEmptyPassphrase: true,
         });
       }
-      expect(keyring.passphraseState).toBe(passphraseState);
+      const expectedPassphraseState = unlockedAttachPin
+        ? passphraseState
+        : undefined;
+      expect(keyring.passphraseState).toBe(expectedPassphraseState);
       expect(bridge.evmGetPublicKey).toHaveBeenCalledWith(
         'usb-path',
         'authoritative-device-id',
-        expect.objectContaining({ passphraseState, useEmptyPassphrase: false })
+        expect.objectContaining({
+          passphraseState: expectedPassphraseState,
+          useEmptyPassphrase: !unlockedAttachPin,
+        })
       );
     }
   );
@@ -1282,7 +1292,7 @@ describe('OneKey passphrase recovery and signature address checks', () => {
       );
       const addresses = await keyring.addAccounts(2);
       expect(addresses[0]).toBe(accountAddress);
-      expect(bridge.getDeviceState).toHaveBeenCalledTimes(1);
+      expect(bridge.getDeviceState).toHaveBeenCalledTimes(2);
       expect(bridge.evmGetPublicKey).toHaveBeenCalledTimes(1);
       expect(bridge.evmGetPublicKey).toHaveBeenCalledWith(
         'usb-path',
