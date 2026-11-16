@@ -23,6 +23,7 @@ import { message } from 'antd';
 import { findChain } from '@/utils/chain';
 import { emitSignComponentAmounted } from '@/utils/signEvent';
 import { ga4 } from '@/utils/ga4';
+import { useCancelOneKeySigningOnClose } from '@/ui/hooks/useCancelOneKeySigningOnClose';
 
 interface ApprovalParams {
   address: string;
@@ -73,7 +74,17 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
   >('SENDING');
   const [content, setContent] = React.useState('');
   const [description, setDescription] = React.useState('');
-  const oneKeySigningRef = React.useRef(true);
+  const oneKeySigningRef = React.useRef(
+    type === HARDWARE_KEYRING_TYPES.Onekey.type
+  );
+  const [oneKeySigning, setOneKeySigning] = React.useState(
+    type === HARDWARE_KEYRING_TYPES.Onekey.type
+  );
+  const cancelOneKeySigning = useCancelOneKeySigningOnClose({
+    accountType: type,
+    address: params.address,
+    active: oneKeySigning,
+  });
 
   const handleRetry = async () => {
     if (connectStatus === WALLETCONNECT_STATUS_MAP.SUBMITTING) {
@@ -82,7 +93,10 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
     }
     const isOneKey = type === HARDWARE_KEYRING_TYPES.Onekey.type;
     if (isOneKey && oneKeySigningRef.current) return;
-    if (isOneKey) oneKeySigningRef.current = true;
+    if (isOneKey) {
+      oneKeySigningRef.current = true;
+      setOneKeySigning(true);
+    }
     try {
       await wallet.syncGetCurrentAccount();
       setConnectStatus(WALLETCONNECT_STATUS_MAP.WAITING);
@@ -92,12 +106,14 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
     } catch (error) {
       if (!isOneKey) throw error;
       oneKeySigningRef.current = false;
+      setOneKeySigning(false);
       setErrorMessage(error.message);
       setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILED);
     }
   };
 
   const handleCancel = () => {
+    cancelOneKeySigning();
     rejectApproval('user cancel');
   };
 
@@ -174,6 +190,7 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
 
     subscribe(EVENTS.COMMON_HARDWARE.REJECTED, async (data) => {
       oneKeySigningRef.current = false;
+      setOneKeySigning(false);
       setErrorMessage(data);
       setConnectStatus(WALLETCONNECT_STATUS_MAP.FAILED);
     });
@@ -183,6 +200,7 @@ export const CommonWaiting = ({ params }: { params: ApprovalParams }) => {
     });
     subscribe(EVENTS.SIGN_FINISHED, async (data) => {
       oneKeySigningRef.current = false;
+      setOneKeySigning(false);
       console.log('finished', data);
       if (data.success) {
         let sig = data.data;

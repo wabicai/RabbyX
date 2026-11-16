@@ -208,13 +208,24 @@ export const HDManager: React.FC<StateProviderProps> = ({
           </div>
           <Manager brand={brand} />
         </main>
-        <DoneButton onClick={handleCloseWin} />
+        <DoneButton
+          onClick={handleCloseWin}
+          onOneKeyImported={() => {
+            idRef.current = null;
+          }}
+        />
       </div>
     </HDManagerStateProvider>
   );
 };
 
-const DoneButton = ({ onClick }: { onClick?(): void }) => {
+const DoneButton = ({
+  onClick,
+  onOneKeyImported,
+}: {
+  onClick?(): void;
+  onOneKeyImported?(): void;
+}) => {
   const { t } = useTranslation();
 
   const {
@@ -229,7 +240,7 @@ const DoneButton = ({ onClick }: { onClick?(): void }) => {
 
   const dispatch = useRabbyDispatch();
 
-  const { store } = useNewUserGuideStore();
+  const { store, setStore } = useNewUserGuideStore();
 
   const wallet = useWallet();
   const history = useHistory();
@@ -261,6 +272,13 @@ const DoneButton = ({ onClick }: { onClick?(): void }) => {
             selectedAccounts.map((account) => account.index - 1),
             keyringId
           );
+          if (keyring === KEYRING_CLASS.HARDWARE.ONEKEY) {
+            // Import succeeded. Drop Success.tsx's cleanup target and this
+            // page's unmount cleanUp(true) ownership so neither wipes the
+            // live shared keyring.
+            setStore({ clearKeyringId: undefined });
+            onOneKeyImported?.();
+          }
         }
       });
 

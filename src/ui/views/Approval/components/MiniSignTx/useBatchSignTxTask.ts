@@ -7,6 +7,7 @@ import PQueue from 'p-queue';
 import React, { useMemo, useState } from 'react';
 import _ from 'lodash';
 import { isLedgerLockError } from '@/ui/utils/ledger';
+import { isOneKeyDisconnectError } from '@/ui/utils/onekey';
 
 type TxStatus = 'sended' | 'signed' | 'idle' | 'failed';
 
@@ -95,7 +96,13 @@ export const useBatchSignTxTask = ({ ga }: { ga?: Record<string, any> }) => {
             },
           });
 
-          if (!(isLedgerLockError(msg) || msg === 'DISCONNECTED')) {
+          if (
+            !(
+              isLedgerLockError(msg) ||
+              isOneKeyDisconnectError(e) ||
+              isOneKeyDisconnectError(msg)
+            )
+          ) {
             setError(msg);
           }
           throw e;

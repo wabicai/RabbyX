@@ -3807,6 +3807,19 @@ export class WalletController extends BaseController {
     return keyring.getEncryptionPublicKey(address, options);
   };
 
+  cancelOneKeySigning = async (address: string) => {
+    let keyring: { cancel?: () => unknown };
+    try {
+      keyring = await keyringService.getKeyringForAccount(
+        address,
+        KEYRING_CLASS.HARDWARE.ONEKEY
+      );
+    } catch {
+      return;
+    }
+    return keyring?.cancel?.();
+  };
+
   requestKeyring = async (
     type: string,
     methodName: string,

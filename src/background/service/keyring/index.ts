@@ -353,6 +353,7 @@ export class KeyringService extends EventEmitter {
   async setLocked(): Promise<MemStoreState> {
     // set locked
     // release all transport before lock wallet
+    const oneKeyCleanUps: Promise<unknown>[] = [];
     this.keyrings.forEach((keyring) => {
       if (keyring.cleanUp) {
         if (keyring.type === OnekeyKeyring.type) {
@@ -361,8 +362,12 @@ export class KeyringService extends EventEmitter {
           void Promise.resolve(keyring.cancelPendingWork()).catch(
             console.error
           );
+          oneKeyCleanUps.push(
+            Promise.resolve(keyring.cleanUp()).catch(console.error)
+          );
+        } else {
+          keyring.cleanUp();
         }
-        keyring.cleanUp();
       }
     });
     this.password = null;
@@ -370,7 +375,7 @@ export class KeyringService extends EventEmitter {
     this.memStore.updateState({ isUnlocked: false });
     // remove keyrings
     this.keyrings = [];
-    await this._updateMemStoreKeyrings();
+    await Promise.all([this._updateMemStoreKeyrings(), ...oneKeyCleanUps]);
     this.emit('lock');
     return this.fullUpdate();
   }
@@ -725,9 +730,21 @@ export class KeyringService extends EventEmitter {
    * @param {Object} opts - Signing options.
    * @returns {Promise<Object>} The signed transactio object.
    */
+  private persistOneKeyPassphraseCleared = async (keyring: any) => {
+    if (
+      keyring?.type === KEYRING_CLASS.HARDWARE.ONEKEY &&
+      keyring?.consumePassphraseStateCleared?.() &&
+      this.isUnlocked()
+    ) {
+      await this.persistAllKeyrings();
+    }
+  };
+
   signTransaction(keyring, ethTx, _fromAddress, opts = {}) {
     const fromAddress = normalizeAddress(_fromAddress);
-    return keyring.signTransaction(fromAddress, ethTx, opts);
+    return Promise.resolve(
+      keyring.signTransaction(fromAddress, ethTx, opts)
+    ).finally(() => this.persistOneKeyPassphraseCleared(keyring));
   }
 
   /**
@@ -741,7 +758,9 @@ export class KeyringService extends EventEmitter {
   signMessage(msgParams, opts = {}) {
     const address = normalizeAddress(msgParams.from);
     return this.getKeyringForAccount(address).then((keyring) => {
-      return keyring.signMessage(address, msgParams.data, opts);
+      return Promise.resolve(
+        keyring.signMessage(address, msgParams.data, opts)
+      ).finally(() => this.persistOneKeyPassphraseCleared(keyring));
     });
   }
 
@@ -756,7 +775,9 @@ export class KeyringService extends EventEmitter {
    */
   signPersonalMessage(keyring, msgParams, opts = {}) {
     const address = normalizeAddress(msgParams.from);
-    return keyring.signPersonalMessage(address, msgParams.data, opts);
+    return Promise.resolve(
+      keyring.signPersonalMessage(address, msgParams.data, opts)
+    ).finally(() => this.persistOneKeyPassphraseCleared(keyring));
   }
 
   /**
@@ -768,7 +789,9 @@ export class KeyringService extends EventEmitter {
    */
   signTypedMessage(keyring, msgParams, opts = { version: 'V1' }) {
     const address = normalizeAddress(msgParams.from);
-    return keyring.signTypedData(address, msgParams.data, opts);
+    return Promise.resolve(
+      keyring.signTypedData(address, msgParams.data, opts)
+    ).finally(() => this.persistOneKeyPassphraseCleared(keyring));
   }
 
   /**

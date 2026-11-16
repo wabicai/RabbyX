@@ -5,6 +5,7 @@ import contactBook from '@/background/service/contactBook';
 import { normalizeAddress } from '@/background/utils';
 import { Wallet } from '@ethereumjs/wallet';
 import { utils } from '@ethereumjs/rlp';
+import { KEYRING_CLASS } from 'consts';
 
 const password = 'password123';
 const walletOneSeedWords =
@@ -348,6 +349,77 @@ describe('keyringService', () => {
       await expect(keyringService.getKeyringForAccount('0x04')).rejects.toThrow(
         new Error('No keyring found for the requested account.')
       );
+    });
+  });
+
+  describe('OneKey passphrase persistence and lock cleanup (C1, C5)', () => {
+    const from = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A';
+
+    it('persists the vault after OneKey consumePassphraseStateCleared on a successful sign (C5)', async () => {
+      const persistSpy = jest
+        .spyOn(keyringService, 'persistAllKeyrings')
+        .mockResolvedValue(true);
+      const keyring = {
+        type: KEYRING_CLASS.HARDWARE.ONEKEY,
+        consumePassphraseStateCleared: jest
+          .fn()
+          .mockReturnValueOnce(true)
+          .mockReturnValue(false),
+        signPersonalMessage: jest.fn().mockResolvedValue('0xsig'),
+      };
+
+      await expect(
+        keyringService.signPersonalMessage(keyring, {
+          from,
+          data: '0x48656c6c6f',
+        })
+      ).resolves.toBe('0xsig');
+
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+      expect(keyring.consumePassphraseStateCleared).toHaveBeenCalled();
+      persistSpy.mockRestore();
+    });
+
+    it('does not persist when OneKey did not clear passphrase state', async () => {
+      const persistSpy = jest
+        .spyOn(keyringService, 'persistAllKeyrings')
+        .mockResolvedValue(true);
+      const keyring = {
+        type: KEYRING_CLASS.HARDWARE.ONEKEY,
+        consumePassphraseStateCleared: jest.fn().mockReturnValue(false),
+        signPersonalMessage: jest.fn().mockResolvedValue('0xsig'),
+      };
+
+      await expect(
+        keyringService.signPersonalMessage(keyring, {
+          from,
+          data: '0x48656c6c6f',
+        })
+      ).resolves.toBe('0xsig');
+
+      expect(persistSpy).not.toHaveBeenCalled();
+      persistSpy.mockRestore();
+    });
+
+    it('setLocked cancels OneKey work and awaits cleanUp (C1)', async () => {
+      const onekey = {
+        type: KEYRING_CLASS.HARDWARE.ONEKEY,
+        cancelPendingWork: jest.fn(),
+        cleanUp: jest.fn().mockResolvedValue(undefined),
+      };
+      const other = {
+        type: KEYRING_CLASS.HARDWARE.TREZOR,
+        cleanUp: jest.fn(),
+      };
+      keyringService.keyrings = [onekey, other];
+
+      await keyringService.setLocked();
+
+      expect(onekey.cancelPendingWork).toHaveBeenCalledTimes(1);
+      expect(onekey.cleanUp).toHaveBeenCalledWith();
+      expect(other.cleanUp).toHaveBeenCalledWith();
+      expect(keyringService.keyrings).toHaveLength(0);
+      expect(keyringService.memStore.getState().isUnlocked).toBe(false);
     });
   });
 });

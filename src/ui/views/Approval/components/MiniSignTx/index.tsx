@@ -58,6 +58,7 @@ import { useThemeMode } from '@/ui/hooks/usePreference';
 import { useGasAccountSign } from '@/ui/views/GasAccount/hooks';
 import { useGasAccountTxsCheck } from '@/ui/views/GasAccount/hooks/checkTxs';
 import { useEnterPassphraseModal } from '@/ui/hooks/useEnterPassphraseModal';
+import { useCancelOneKeySigningOnClose } from '@/ui/hooks/useCancelOneKeySigningOnClose';
 
 export const MiniSignTx = ({
   txs,
@@ -359,6 +360,11 @@ export const MiniSignTx = ({
   const task = useBatchSignTxTask({
     ga,
   });
+  const cancelOneKeySigning = useCancelOneKeySigningOnClose({
+    accountType: currentAccount?.type,
+    address: currentAccount?.address,
+    active: task.status === 'active',
+  });
   useEffect(() => {
     onStatusChange?.(task.status);
   }, [task.status]);
@@ -464,6 +470,7 @@ export const MiniSignTx = ({
   };
 
   const handleCancel = useMemoizedFn(() => {
+    cancelOneKeySigning();
     onReject?.();
   });
 
@@ -846,7 +853,7 @@ export const MiniSignTx = ({
           status={'FAILED'}
           content={t('page.signFooterBar.qrcode.txFailed')}
           description={task.error}
-          onCancel={onReject}
+          onCancel={handleCancel}
           onRetry={async () => {
             await task.retry();
             onResolve?.();

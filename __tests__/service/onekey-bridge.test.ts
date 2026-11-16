@@ -1074,7 +1074,12 @@ describe('OneKey V1/V2 account import', () => {
       code: 100,
     });
     bridge.openWalletSession.mockRejectedValueOnce(error);
-    await expect(keyring.unlock()).rejects.toBe(error);
+    // Extension toError (f87fce51b) sends coded rejections through
+    // handleDeviceError instead of returning the original Error object.
+    await expect(keyring.unlock()).rejects.toMatchObject({
+      code: 100,
+      message: '100: Device disconnected',
+    });
     expect(bridge.getPassphraseState).not.toHaveBeenCalled();
   });
 
@@ -1173,6 +1178,224 @@ describe('OneKey V1/V2 account import', () => {
     const { bridge, keyring } = setup('V2');
     bridge.evmGetPublicKey.mockRejectedValue(new Error('USB disconnected'));
     await expect(keyring.unlock()).rejects.toThrow('USB disconnected');
+  });
+
+  it('drops the MV3 session and in-memory ids on cleanUp (C1)', async () => {
+    const env = jest.requireMock('@/utils/env') as { isManifestV3: boolean };
+    env.isManifestV3 = true;
+    try {
+      storageSessionGetMock.mockResolvedValue({});
+      const { keyring } = setup('V2', 'old-wallet');
+      await expect(keyring.unlock()).resolves.toBe('just unlocked');
+      expect(keyring.isUnlocked()).toBe(true);
+
+      await keyring.cleanUp();
+      expect(keyring.isUnlocked()).toBe(false);
+      expect(keyring.connectId).toBeNull();
+      expect(keyring.deviceId).toBeNull();
+      expect(keyring.passphraseState).toBeUndefined();
+      expect(mockBrowser.storage.session.remove).toHaveBeenCalledWith(
+        'onekeySessionState'
+      );
+    } finally {
+      storageSessionGetMock.mockReset();
+      env.isManifestV3 = false;
+    }
+  });
+
+  it('cancelPendingWork marks work cancelled so a later cleanUp(true) still clears (C1)', async () => {
+    const { keyring } = setup('V1');
+    await keyring.unlock();
+    expect(keyring.isUnlocked()).toBe(true);
+
+    // Simulate an approval-owned signing still in flight.
+    (keyring as any).pendingSignings = 1;
+
+    // An import page closing during active signing must not clear the session.
+    await keyring.cleanUp(true);
+    expect(keyring.isUnlocked()).toBe(true);
+
+    // Locking (cancelPendingWork + cleanUp) must still clear even while the
+    // cancelled signing's finally block has not settled.
+    keyring.cancelPendingWork();
+    await keyring.cleanUp(true);
+    expect(keyring.isUnlocked()).toBe(false);
+  });
+
+  it('resolves a replugged connectId/deviceId on unlock (C3)', async () => {
+    const { bridge, keyring } = setup('V1');
+    await expect(keyring.unlock()).resolves.toBe('just unlocked');
+    expect(keyring.connectId).toBe('usb-path');
+    expect(keyring.deviceId).toBe('authoritative-device-id');
+
+    bridge.searchDevices.mockResolvedValueOnce({
+      success: true,
+      payload: [{ connectId: 'replugged-usb-path' }],
+    });
+    bridge.getDeviceState.mockResolvedValueOnce({
+      success: true,
+      payload: {
+        protocol: 'V1',
+        identity: { deviceId: 'replugged-device-id' },
+      },
+    });
+    await expect(keyring.unlock()).resolves.toBe('just unlocked');
+    expect(keyring.connectId).toBe('replugged-usb-path');
+    expect(keyring.deviceId).toBe('replugged-device-id');
+  });
+
+  it('does not commit ids or xpub when a device-B unlock fails (C4)', async () => {
+    const { bridge, keyring } = setup('V1', 'wallet-a');
+    await expect(keyring.unlock()).resolves.toBe('just unlocked');
+    expect(keyring.isUnlocked()).toBe(true);
+    expect(keyring.connectId).toBe('usb-path');
+    expect(keyring.deviceId).toBe('authoritative-device-id');
+
+    bridge.searchDevices.mockResolvedValue({
+      success: true,
+      payload: [{ connectId: 'usb-b' }],
+    });
+    bridge.getDeviceState.mockResolvedValue({
+      success: true,
+      payload: { protocol: 'V1', identity: { deviceId: 'device-b' } },
+    });
+    bridge.getPassphraseState.mockResolvedValueOnce({
+      success: false,
+      payload: { code: 802, error: 'PIN cancelled' },
+    });
+
+    await expect(keyring.unlock()).rejects.toMatchObject({ code: 802 });
+    expect(keyring.isUnlocked()).toBe(false);
+    expect(keyring.connectId).toBeNull();
+    expect(keyring.deviceId).toBeNull();
+    expect(keyring.passphraseState).toBeUndefined();
+  });
+
+  it.each(['thrown', 'returned'])(
+    'clears the previous unlock when device discovery fails (%s)',
+    async (failure) => {
+      const { bridge, keyring } = setup('V1', 'wallet-a');
+      await expect(keyring.unlock()).resolves.toBe('just unlocked');
+      expect(keyring.isUnlocked()).toBe(true);
+      expect(keyring.passphraseState).toBe('wallet-a');
+      expect(keyring.connectId).toBe('usb-path');
+
+      if (failure === 'thrown') {
+        bridge.searchDevices.mockRejectedValueOnce(
+          Object.assign(new Error('Disconnected'), { code: 107 })
+        );
+      } else {
+        bridge.searchDevices.mockResolvedValueOnce({
+          success: false,
+          payload: { code: 107, error: 'Disconnected' },
+        });
+      }
+
+      await expect(keyring.unlock()).rejects.toMatchObject({ code: 107 });
+      expect(keyring.isUnlocked()).toBe(false);
+      expect(keyring.connectId).toBeNull();
+      expect(keyring.deviceId).toBeNull();
+      expect(keyring.passphraseState).toBeUndefined();
+      expect(keyring.hdk.publicKey).toBeFalsy();
+      await expect(keyring.unlock()).resolves.toBe('just unlocked');
+    }
+  );
+
+  it.each(['resolved', 'thrown'])(
+    'does not probe the standard wallet when unlock is cancelled during status refresh (%s)',
+    async (kind) => {
+      const { bridge, keyring } = setup('V2', 'hidden-wallet-token', {
+        passphraseProtection: true,
+        unlocked: false,
+      });
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let finish!: (value: unknown) => void;
+      bridge.openWalletSession.mockImplementationOnce(async () => {
+        bridge.getDeviceState.mockImplementationOnce(() => {
+          entered();
+          return new Promise((resolve, reject) => {
+            finish = kind === 'resolved' ? resolve : reject;
+          });
+        });
+        return {
+          success: true,
+          payload: {
+            walletType: 'hidden',
+            passphraseState: 'hidden-wallet-token',
+          },
+        };
+      });
+
+      const unlocking = keyring.unlock();
+      const rejected = expect(unlocking).rejects.toThrow(
+        'OneKey signing cancelled'
+      );
+      await waiting;
+      await keyring.cancel();
+      finish(
+        kind === 'resolved'
+          ? {
+              success: true,
+              payload: { status: { unlocked: true, unlockedAttachPin: false } },
+            }
+          : new Error('status refresh failed')
+      );
+      await rejected;
+      expect(bridge.getPassphraseState).not.toHaveBeenCalledWith('usb-path', {
+        useEmptyPassphrase: true,
+      });
+      expect(bridge.evmGetPublicKey).not.toHaveBeenCalled();
+      expect(keyring.isUnlocked()).toBe(false);
+    }
+  );
+
+  it('refreshes accountDetails when re-importing an existing address in addAccounts (C8)', async () => {
+    const { bridge, keyring } = setup('V2', undefined, {
+      passphraseProtection: false,
+    });
+    const hd = new HDKey();
+    hd.privateKey = privateKey;
+    hd.chainCode = Buffer.from('11'.repeat(32), 'hex');
+    bridge.evmGetPublicKey.mockResolvedValueOnce({
+      success: true,
+      payload: {
+        pub: hd.publicKey.toString('hex'),
+        node: { chain_code: hd.chainCode.toString('hex') },
+      },
+    });
+
+    await keyring.unlock();
+    const addr0 = keyring._addressFromIndex('m', 0);
+    keyring.accounts = [addr0];
+    keyring.accountDetails[addr0] = {
+      hdPath: "m/44'/60'/0'/0/0",
+      hdPathType: 'BIP44',
+      hdPathBasePublicKey: 'stale-xpub',
+      passphraseState: 'stale-hidden-state',
+      index: 0,
+    };
+
+    keyring.setAccountToUnlock('0');
+    await expect(keyring.addAccounts(1)).resolves.toEqual([addr0]);
+    expect(keyring.accounts).toEqual([addr0]);
+    expect(keyring.accountDetails[addr0]).toEqual({
+      hdPath: "m/44'/60'/0'/0/0",
+      hdPathType: 'BIP44',
+      hdPathBasePublicKey: hd.publicKey.toString('hex'),
+      passphraseState: undefined,
+      index: 0,
+    });
+  });
+
+  it('exposes searchDevices() pre-warm via bridge after init (C9)', async () => {
+    const { bridge, keyring } = setup('V2');
+    const res = await keyring.searchDevices();
+    expect(bridge.init).toHaveBeenCalled();
+    expect(bridge.searchDevices).toHaveBeenCalled();
+    expect(res.success).toBe(true);
   });
 });
 
@@ -1413,7 +1636,7 @@ describe('OneKey passphrase recovery and signature address checks', () => {
       );
       await expect(signingCall(keyring, kind)).rejects.toMatchObject({
         code: 109,
-        message: 'USB interrupted',
+        message: '109: background.keyring.onekey.deviceInterrupted',
       });
       bridge[kind].mockResolvedValueOnce({
         success: false,
@@ -1902,7 +2125,7 @@ describe('OneKey passphrase recovery and signature address checks', () => {
     }
   );
 
-  it('persists a recovered standard-wallet session in MV3 storage', async () => {
+  it('clears a recovered standard-wallet session in MV3 storage', async () => {
     const { keyring, bridge } = setupSigning('V2', 'stale-passphrase');
     await keyring.unlock();
     const env = jest.requireMock('@/utils/env');
@@ -1915,7 +2138,7 @@ describe('OneKey passphrase recovery and signature address checks', () => {
     };
     env.isManifestV3 = true;
     storageSessionGetMock.mockResolvedValueOnce({ onekeySessionState: stored });
-    mockBrowser.storage.session.set.mockClear();
+    mockBrowser.storage.session.remove.mockClear();
     bridge.evmSignMessage
       .mockResolvedValueOnce(disabled)
       .mockResolvedValueOnce({
@@ -1926,9 +2149,12 @@ describe('OneKey passphrase recovery and signature address checks', () => {
       await expect(signingCall(keyring, 'evmSignMessage')).resolves.toBe(
         signature
       );
-      expect(mockBrowser.storage.session.set).toHaveBeenCalledWith({
-        onekeySessionState: { ...stored, passphraseState: undefined },
-      });
+      expect(mockBrowser.storage.session.remove).toHaveBeenCalledWith(
+        'onekeySessionState'
+      );
+      expect(keyring.isUnlocked()).toBe(false);
+      expect(keyring.consumePassphraseStateCleared()).toBe(true);
+      expect(keyring.consumePassphraseStateCleared()).toBe(false);
     } finally {
       env.isManifestV3 = false;
     }
